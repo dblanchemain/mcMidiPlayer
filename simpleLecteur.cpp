@@ -75,14 +75,14 @@ int main(int argc, char* argv[]){
   DSP->buildUserInterface(soundinterface);
   
   if (is_osc) {
-  	 int argc1=3;
-  	 char* argv1[64];
-  	 argv1[0]=filename;
-  	 argv1[1]=(char*)"-xmit";
-  	 argv1[2]=(char*)"1";
-  	 //cout <<argv1[0]<<argv1[1] << " : " << argv1[2]<< endl;
-  	 //argv[3]=(char*)"-port";
-  	 //argv[4]=(char*)"5540";
+  	int argc1=3;
+  	char* argv1[64];
+  	argv1[0]=filename;
+  	argv1[1]=(char*)"-xmit";
+  	argv1[2]=(char*)"1";
+  	//cout <<argv1[0]<<argv1[1] << " : " << argv1[2]<< endl;
+  	//argv[3]=(char*)"-port";
+  	//argv[4]=(char*)"5540";
     oscinterface = new OSCUI(filename,argc1,argv1);
     DSP->buildUserInterface(oscinterface);
   }
