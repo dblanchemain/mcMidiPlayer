@@ -8,7 +8,6 @@
 #include <vector>
 
 #include "selectFile.h"
-#include "dialog.h"
 #include "parametres.h"
 
 
