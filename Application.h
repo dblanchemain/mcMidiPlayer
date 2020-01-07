@@ -192,7 +192,6 @@ class Application{
   std::string labelNfiles;
 
   selectFile fileSelector;
-  Dialog newDialog;
   sf::Color selectorBarColor;
   sf::Color selectorBkgColor;
   sf::Color selectorFontColor;
