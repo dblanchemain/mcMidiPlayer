@@ -29,7 +29,6 @@
 
 #include "Application.h"
 #include "selectFile.h"
-#include "dialog.h"
 #include "parametres.h"
 #include "info.h"
 
