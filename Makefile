@@ -31,6 +31,7 @@ install:
 	chmod 755 $(prefix)/share/mcMidiPlayer
 	cp simplePlayer2 $(prefix)/share/mcMidiPlayer
 	chmod 755 $(prefix)/share/mcMidiPlayer
+	cp parametres.conf $(prefix)/share/mcMidiPlayer
 
 
 clean:
