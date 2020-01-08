@@ -19,7 +19,13 @@ mcMidiPlayer: main.cpp
 
 
 install: 
-	([ -e mcMidiPlayer]) && cp mcMidiPlayer $(prefix)/bin
+	cp mcMidiPlayer $(prefix)/bin
+	mkdir $(prefix)/share/mcMidiPlayer 
+	cp -Rfa Themes $(prefix)/share/mcMidiPlayer
+	cp -Rfa gui $(prefix)/share/mcMidiPlayer
+	cp -Rfa Lang $(prefix)/share/mcMidiPlayer
+	cp midiPlayer $(prefix)/share/mcMidiPlayer
+	cp simplePlayer2 $(prefix)/share/mcMidiPlayer
 
 
 clean:
