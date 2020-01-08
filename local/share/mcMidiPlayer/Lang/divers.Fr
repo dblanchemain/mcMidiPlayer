@@ -1,0 +1,8 @@
+titreSelector=Fichiers
+Annuler=Annuler
+Valider=Valider
+labelNameBk=Nom de la banque :
+labelNbchannels=Nombre de canaux max :
+labelDefKey=Midi key
+labelNfiles=Nom des fichiers
+
