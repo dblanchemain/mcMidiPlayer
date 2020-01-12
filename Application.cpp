@@ -659,6 +659,7 @@ void Application::onClick(sf::Event e){
   	string extension;
   	string extension2;
   	string s="/";
+  	string sv;
    if (e.mouseButton.button == sf::Mouse::Left){
       std::cout << "the left button was pressed" << std::endl;
       std::cout << "mouse x: " << e.mouseButton.x << std::endl;
@@ -731,7 +732,6 @@ void Application::onClick(sf::Event e){
    if(selectM1==0 && selectM2==0 && e.mouseButton.x>52 && e.mouseButton.x<910 && e.mouseButton.y>124 ){
    	float hp=((e.mouseButton.x-52)/858.0)*4;
    	float vp=((e.mouseButton.y-127)/555.0)*16;
-   	string s;
    	sf::String vs;
    	int id=(int)vp;
    	int idh=(int)hp*16;
@@ -745,9 +745,10 @@ void Application::onClick(sf::Event e){
 		  	  string extension2=rtf2.substr(rtf2.length()-5,5);
 		  	  if(extension2==".flac" || extension2==".aiff" || extension==".wav" || extension==".ogg" ){
 		  	  	 keyActive=id+idh+offsetWorkSpace;
+		  	  	 s="/";
 		  	  	 fileNameF[keyActive]=getcwd(NULL,0)+s+rtf2;
-		  	  	 s=rtf2.substr(0,20);
-		  	  	 vs = sf::String::fromUtf8(s.begin(), s.end());
+		  	  	 sv=rtf2.substr(0,20);
+		  	  	 vs = sf::String::fromUtf8(sv.begin(), sv.end());
 		  	  	 fileName[keyActive].setString(vs);
 		  	  }
 	  	   }
