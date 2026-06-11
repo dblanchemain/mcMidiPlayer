@@ -17,6 +17,7 @@ let audioReadyCb      = null;
 let trackDots         = {};   // id → élément .track-dot
 let activeTrackIds    = new Set();
 let interpVolumes     = [];   // volume par interprète (0..2, défaut 1)
+let interpMuted       = [];   // mute par interprète (bool)
 let interpKeyData     = [];   // [{id, origGain}] par interprète
 let loadPending       = 0;    // fichiers WAV en cours de chargement
 let loadResolved      = 0;    // fichiers WAV chargés ou en erreur
@@ -32,8 +33,17 @@ function volToDeg(vol) {
 
 function setInterpVolume(interpIdx, vol) {
   interpVolumes[interpIdx] = vol;
+  if (interpMuted[interpIdx]) return;
   for (const { id } of interpKeyData[interpIdx] ?? []) {
     window.api.sendAudio({ cmd: 'set_gain', id, gain: vol });
+  }
+}
+
+function setInterpMute(interpIdx, muted) {
+  interpMuted[interpIdx] = muted;
+  const gain = muted ? 0 : (interpVolumes[interpIdx] ?? 1);
+  for (const { id } of interpKeyData[interpIdx] ?? []) {
+    window.api.sendAudio({ cmd: 'set_gain', id, gain });
   }
 }
 
@@ -253,6 +263,7 @@ async function loadPartition(folder) {
   trackDots     = {};
   activeTrackIds.clear();
   interpVolumes = [];
+  interpMuted   = [];
   interpKeyData = [];
   loadPending   = 0;
   loadResolved  = 0;
@@ -310,6 +321,7 @@ async function loadPartition(folder) {
     const midiTrackName = midi.tracks[i + 1]?.trackName ?? '';
     const keyMap = new Map();
     interpVolumes[i] = 1;
+    interpMuted[i]   = false;
     interpKeyData[i] = [];
     for (const k of interps[i].keys) {
       const id       = `t${i + 1}_${k.key}`;
@@ -374,6 +386,20 @@ function addTrackRow(idx, jsonName, midiName, nKeys, nbCanaux) {
     nameWrap.appendChild(sub);
   }
   li.appendChild(nameWrap);
+
+  const muteLabel = document.createElement('label');
+  muteLabel.className = 'mute-label';
+  const muteBox = document.createElement('input');
+  muteBox.type = 'checkbox';
+  muteBox.className = 'mute-check';
+  muteBox.title = 'Mute';
+  muteBox.addEventListener('change', () => {
+    setInterpMute(idx, muteBox.checked);
+    li.classList.toggle('muted', muteBox.checked);
+  });
+  muteLabel.appendChild(muteBox);
+  muteLabel.append(' Mute');
+  li.appendChild(muteLabel);
 
   const ch = document.createElement('span');
   ch.className = 'track-ch';
