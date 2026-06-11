@@ -1,0 +1,178 @@
+/* mcMidiPlayer — style */
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+:root {
+  --bg:      #1e1e2e;
+  --surface: #2a2a3e;
+  --border:  #44475a;
+  --text:    #cdd6f4;
+  --accent:  #7aa2f7;
+  --red:     #f38ba8;
+  --green:   #a6e3a1;
+  --muted:   #6c7086;
+  --yellow:  #f9e2af;
+}
+
+body {
+  background: var(--bg);
+  color: var(--text);
+  font-family: 'Segoe UI', system-ui, sans-serif;
+  font-size: 13px;
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+  overflow: hidden;
+}
+
+/* ── Header ── */
+header {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 6px 12px;
+  background: var(--surface);
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+}
+.app-title { font-weight: 700; font-size: 15px; color: var(--accent); margin-right: auto; }
+.status     { font-size: 11px; color: var(--muted); }
+.status.ok  { color: var(--green); }
+.status.err { color: var(--red); }
+
+button {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  color: var(--text);
+  padding: 4px 10px;
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 12px;
+}
+button:hover:not(:disabled) { border-color: var(--accent); color: var(--accent); }
+button:disabled { opacity: 0.4; cursor: default; }
+
+/* ── Transport ── */
+#transport {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 12px 14px;
+  background: var(--surface);
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+}
+
+#btnPlay  { color: var(--green);  border-color: var(--green);  font-size: 14px; padding: 5px 16px; }
+#btnPause { color: var(--yellow); border-color: var(--yellow); font-size: 14px; padding: 5px 14px; }
+#btnStop  { color: var(--red);    border-color: var(--red);    font-size: 14px; padding: 5px 14px; }
+#btnPlay:hover:not(:disabled)  { background: rgba(166,227,161,.12); }
+#btnPause:hover:not(:disabled) { background: rgba(249,226,175,.12); }
+#btnStop:hover:not(:disabled)  { background: rgba(243,139,168,.12); }
+
+#progressWrap {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+#progressBar {
+  width: 100%;
+  height: 6px;
+  background: var(--border);
+  border-radius: 3px;
+  cursor: pointer;
+  overflow: hidden;
+}
+#progressFill {
+  height: 100%;
+  width: 0%;
+  background: var(--accent);
+  border-radius: 3px;
+  transition: width 0.1s linear;
+}
+#timeDisplay {
+  font-size: 11px;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+}
+
+/* ── Track list ── */
+#trackSection {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+#trackHeader {
+  padding: 8px 14px 4px;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--accent);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  border-bottom: 1px solid var(--border);
+}
+#trackList {
+  flex: 1;
+  overflow-y: auto;
+  list-style: none;
+  padding: 4px 0;
+}
+.track-item {
+  display: flex;
+  align-items: center;
+  padding: 6px 14px;
+  border-bottom: 1px solid rgba(68,71,90,.4);
+  gap: 10px;
+}
+.track-item:hover { background: rgba(122,162,247,.05); }
+.track-item.active { background: rgba(166,227,161,.08); }
+.track-item.active .track-name { color: var(--green); }
+
+.track-dot {
+  width: 8px; height: 8px;
+  border-radius: 50%;
+  flex-shrink: 0;
+  background: var(--border);
+}
+.track-dot.loading { background: var(--yellow); animation: blink .5s step-end alternate infinite; }
+.track-dot.ready   { background: var(--green); }
+.track-dot.error   { background: var(--red); }
+.track-dot.playing { background: var(--green); animation: pulse .4s ease-in-out infinite alternate; }
+
+@keyframes blink { to { opacity: 0; } }
+@keyframes pulse { to { opacity: 0.3; } }
+
+.track-name {
+  flex: 1;
+  font-size: 12px;
+  color: var(--text);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.track-info {
+  font-size: 11px;
+  color: var(--muted);
+  white-space: nowrap;
+}
+.track-ch {
+  font-size: 11px;
+  color: var(--accent);
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+/* ── Empty state ── */
+#emptyState {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  color: var(--muted);
+  gap: 10px;
+  font-size: 13px;
+}
+#emptyState .big { font-size: 32px; }

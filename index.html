@@ -1,0 +1,40 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+  <meta charset="UTF-8"/>
+  <meta http-equiv="Content-Security-Policy"
+        content="default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data:;"/>
+  <title>mcMidiPlayer</title>
+  <link rel="stylesheet" href="style.css"/>
+</head>
+<body>
+  <header>
+    <span class="app-title">mcMidiPlayer</span>
+    <span id="statusBar" class="status">audio: démarrage…</span>
+    <span id="midiStatus" class="status">MIDI: —</span>
+    <button id="btnOpen">Ouvrir dossier</button>
+  </header>
+
+  <div id="transport">
+    <button id="btnPlay"  disabled>▶ Lire</button>
+    <button id="btnPause" disabled>⏸ Pause</button>
+    <button id="btnStop"  disabled>■ Stop</button>
+    <div id="progressWrap">
+      <div id="progressBar"><div id="progressFill"></div></div>
+      <span id="timeDisplay">0:00 / 0:00</span>
+    </div>
+  </div>
+
+  <div id="trackSection">
+    <div id="trackHeader">Interprètes</div>
+    <ul id="trackList">
+      <li id="emptyState">
+        <span class="big">♩</span>
+        <span>Ouvrir un dossier <em>partition_midi</em></span>
+      </li>
+    </ul>
+  </div>
+
+  <script src="renderer.js"></script>
+</body>
+</html>
