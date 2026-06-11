@@ -18,6 +18,8 @@ let trackDots         = {};   // id → élément .track-dot
 let activeTrackIds    = new Set();
 let interpVolumes     = [];   // volume par interprète (0..2, défaut 1)
 let interpKeyData     = [];   // [{id, origGain}] par interprète
+let loadPending       = 0;    // fichiers WAV en cours de chargement
+let loadResolved      = 0;    // fichiers WAV chargés ou en erreur
 
 // ── Volume knob ───────────────────────────────────────────────────────────────
 
@@ -79,11 +81,25 @@ window.api.onAudioEvent(msg => {
   } else if (msg.type === 'loaded') {
     const dot = trackDots[msg.id];
     if (dot) { dot.className = 'track-dot ready'; }
+    loadResolved++;
+    checkAllLoaded();
   } else if (msg.type === 'load_error') {
     const dot = trackDots[msg.id];
     if (dot) { dot.className = 'track-dot error'; dot.title = msg.message; }
+    loadResolved++;
+    checkAllLoaded();
   }
 });
+
+function checkAllLoaded() {
+  if (loadPending === 0) return;
+  if (loadResolved >= loadPending) {
+    enableTransport(true);
+    setStatus(`Prêt`, 'ok');
+  } else {
+    setStatus(`Chargement des sons… (${loadResolved} / ${loadPending})`);
+  }
+}
 
 function waitAudioReady(ms = 6000) {
   if (audioReady) return Promise.resolve();
@@ -238,6 +254,8 @@ async function loadPartition(folder) {
   activeTrackIds.clear();
   interpVolumes = [];
   interpKeyData = [];
+  loadPending   = 0;
+  loadResolved  = 0;
 
   const list = document.getElementById('trackList');
   list.innerHTML = '';
@@ -304,8 +322,9 @@ async function loadPartition(folder) {
         fadeType: k.fadeType ?? 'l',
         fadeIn:   k.fadeIn   ?? 0.05,
         fadeOut:  k.fadeOut  ?? 0.1,
-        oneShot:  false,
+        oneShot:  k.oneShot  ?? false,
       });
+      loadPending++;
       keyMap.set(k.key, id);
       trackDots[id] = null;
       interpKeyData[i].push({ id, origGain });
@@ -325,8 +344,8 @@ async function loadPartition(folder) {
   totalDuration = (schedule.at(-1).sec ?? 0) + 1;
   updateProgress(0);
   setMidiStatus(`MIDI: ${midi.tracks.length - 1} piste(s), ${schedule.length} év.`);
-  setStatus(`Prêt — ${interps.length} interprète(s), ${schedule.filter(e => e.cmd === 'play').length} notes`);
-  enableTransport(true);
+  setStatus(`Chargement des sons… (0 / ${loadPending})`);
+  // Le transport est activé par checkAllLoaded() quand tous les fichiers sont chargés
 }
 
 // ── UI interprètes ────────────────────────────────────────────────────────────
