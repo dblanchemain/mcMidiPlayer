@@ -123,6 +123,7 @@ class Track:
         self.id        = row_id
         self.file      = ''
         self.gain      = 1.0
+        self.volume    = 1.0   # multiplicateur linéaire direct (knob volume)
         self.fade_type = 'l'
         self.fade_in   = 0.1
         self.fade_out  = 0.1
@@ -182,7 +183,7 @@ class Track:
 
     def gain_linear(self):
         db = (self.gain - 1) * 2.0
-        return 10 ** (db / 20.0)
+        return 10 ** (db / 20.0) * self.volume
 
     def start(self, velocity=127):
         with self.lock:
@@ -319,7 +320,7 @@ def process_commands():
 
         elif cmd == 'set_gain':
             track = get_or_create(row_id)
-            track.gain = float(msg.get('gain', 1))
+            track.volume = float(msg.get('gain', 1))
 
         elif cmd == 'remove':
             with tracks_lock:
