@@ -35,6 +35,16 @@ header {
   flex-shrink: 0;
 }
 .app-title { font-weight: 700; font-size: 15px; color: var(--accent); margin-right: auto; }
+#themeSelect {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  color: var(--text);
+  padding: 3px 6px;
+  border-radius: 4px;
+  font-size: 11px;
+  cursor: pointer;
+}
+#themeSelect:hover { border-color: var(--accent); }
 .status     { font-size: 11px; color: var(--muted); }
 .status.ok  { color: var(--green); }
 .status.err { color: var(--red); }

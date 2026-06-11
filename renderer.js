@@ -555,3 +555,4 @@ document.getElementById('btnPause').addEventListener('click', pause);
 document.getElementById('btnStop').addEventListener('click',  () => stopPlayback(true));
 
 enableTransport(false);
+initThemes();
