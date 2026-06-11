@@ -55,49 +55,91 @@ function setMidiStatus(txt) {
   document.getElementById('midiStatus').textContent = txt;
 }
 
-// ── MIDI parser (Type 0 / Type 1, big-endian) ─────────────────────────────────
+// ── MIDI parser (Type 0 / Type 1, robuste) ───────────────────────────────────
 
 function parseMidi(raw) {
-  const u8  = raw instanceof Uint8Array ? raw : new Uint8Array(raw);
+  // Normalise le buffer reçu (Buffer node, Uint8Array, ArrayBuffer, ou {type:'Buffer',data:[]})
+  let u8;
+  if (raw instanceof Uint8Array)        u8 = raw;
+  else if (raw instanceof ArrayBuffer)  u8 = new Uint8Array(raw);
+  else if (raw && raw.type === 'Buffer') u8 = new Uint8Array(raw.data);
+  else if (Array.isArray(raw))          u8 = new Uint8Array(raw);
+  else throw new Error('Données MIDI illisibles');
+
+  const total = u8.length;
   let p = 0;
 
-  const rd8  = () => u8[p++];
-  const rd16 = () => { const v = (u8[p] << 8) | u8[p + 1]; p += 2; return v; };
-  const rd32 = () => { const v = ((u8[p] << 24) | (u8[p+1] << 16) | (u8[p+2] << 8) | u8[p+3]) >>> 0; p += 4; return v; };
-  const rdVL = () => { let v = 0, b; do { b = rd8(); v = (v << 7) | (b & 0x7f); } while (b & 0x80); return v; };
+  const safe8  = () => p < total ? u8[p++] : 0;
+  const rd16   = () => (safe8() << 8) | safe8();
+  const rd32   = () => ((safe8() << 24) | (safe8() << 16) | (safe8() << 8) | safe8()) >>> 0;
+  const rdVL   = () => { let v = 0, b; do { b = safe8(); v = (v << 7) | (b & 0x7f); } while ((b & 0x80) && p < total); return v; };
 
-  if (rd32() !== 0x4d546864) throw new Error('Fichier MIDI invalide');
-  rd32(); // longueur entête = 6
+  if (rd32() !== 0x4d546864) throw new Error('Fichier MIDI invalide (pas de MThd)');
+  const hdrLen = rd32();
   const format  = rd16();
   const nTracks = rd16();
   const ppq     = rd16() & 0x7fff;
+  if (hdrLen > 6) p += hdrLen - 6; // sauter les octets d'entête supplémentaires
 
   const tracks = [];
-  for (let t = 0; t < nTracks; t++) {
-    if (rd32() !== 0x4d54726b) throw new Error('Chunk de piste invalide');
-    const end = p + rd32();
+
+  // Parcourir tous les chunks présents (ignore les chunks non-MTrk)
+  while (p + 8 <= total) {
+    const magic    = rd32();
+    const chunkLen = rd32();
+    const chunkEnd = Math.min(p + chunkLen, total);
+
+    if (magic !== 0x4d54726b) { // chunk inconnu : sauter
+      p = chunkEnd;
+      continue;
+    }
+
     const evs = [];
     let tick = 0, rs = 0;
-    while (p < end) {
+
+    while (p < chunkEnd) {
       tick += rdVL();
+      if (p >= chunkEnd) break;
+
       let st = u8[p];
-      if (st & 0x80) { rs = st; p++; } else { st = rs; }
-      const type = st & 0xf0;
-      if      (type === 0x80) { const n = rd8(); rd8(); evs.push({ tick, type: 'off', note: n }); }
-      else if (type === 0x90) { const n = rd8(), v = rd8(); evs.push({ tick, type: v ? 'on' : 'off', note: n, vel: v }); }
-      else if (type === 0xa0 || type === 0xb0 || type === 0xe0) { rd8(); rd8(); }
-      else if (type === 0xc0 || type === 0xd0) { rd8(); }
-      else if (st === 0xff) {
-        const mt = rd8(), ml = rdVL();
-        if (mt === 0x51 && ml === 3) evs.push({ tick, type: 'tempo', tempo: (rd8() << 16) | (rd8() << 8) | rd8() });
-        else p += ml;
+      if (st & 0x80) {
+        p++;
+        if (st < 0xf0) rs = st; // running status uniquement pour les messages voix
+      } else {
+        st = rs; // running status : pas d'incrément de p
       }
-      else if (st === 0xf0 || st === 0xf7) { p += rdVL(); }
-      else p++;
+
+      const type = st & 0xf0;
+
+      if (type === 0x80) {
+        const n = safe8(); safe8();
+        evs.push({ tick, type: 'off', note: n });
+      } else if (type === 0x90) {
+        const n = safe8(), v = safe8();
+        evs.push({ tick, type: v ? 'on' : 'off', note: n, vel: v });
+      } else if (type === 0xa0 || type === 0xb0 || type === 0xe0) {
+        safe8(); safe8();
+      } else if (type === 0xc0 || type === 0xd0) {
+        safe8();
+      } else if (st === 0xff) {
+        const mt = safe8(), ml = rdVL();
+        if (mt === 0x51 && ml === 3) {
+          evs.push({ tick, type: 'tempo', tempo: (safe8() << 16) | (safe8() << 8) | safe8() });
+        } else {
+          p = Math.min(p + ml, chunkEnd);
+        }
+        if (mt === 0x2f) break; // end-of-track
+      } else if (st === 0xf0 || st === 0xf7) {
+        p = Math.min(p + rdVL(), chunkEnd);
+      } else {
+        p++; // octet inconnu : avancer
+      }
     }
-    p = end;
+
+    p = chunkEnd;
     tracks.push(evs);
   }
+
   return { format, ppq, tracks };
 }
 
