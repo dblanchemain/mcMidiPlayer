@@ -64,13 +64,14 @@ def read_stdin():
 RELEASE_FRAMES = 2205  # ~50 ms à 44100 Hz
 
 class Voice:
-    __slots__ = ('data', 'envelope', 'gain', 'n_ch', 'n_frames',
+    __slots__ = ('data', 'envelope', 'track', 'vel_scale', 'n_ch', 'n_frames',
                  'pos', 'active', 'releasing', 'release_pos')
 
-    def __init__(self, data, envelope, gain, velocity=127):
+    def __init__(self, data, envelope, track, velocity=127):
         self.data        = data
         self.envelope    = envelope
-        self.gain        = gain * max(0.0, min(1.0, velocity / 127.0))
+        self.track       = track   # ref dynamique pour le gain en temps réel
+        self.vel_scale   = max(0.0, min(1.0, velocity / 127.0))
         self.n_ch        = data.shape[1]
         self.n_frames    = data.shape[0]
         self.pos         = 0
@@ -93,7 +94,7 @@ class Voice:
         chunk_len = min(frames, remaining)
         chunk     = self.data[self.pos: self.pos + chunk_len]
         env_chunk = self.envelope[self.pos: self.pos + chunk_len]
-        amp       = self.gain
+        amp       = self.track.gain_linear() * self.vel_scale
 
         if self.releasing:
             r_remaining = max(RELEASE_FRAMES - self.release_pos, 0)
@@ -188,7 +189,7 @@ class Track:
             if self.data is None:
                 return
             env   = self._get_envelope()
-            voice = Voice(self.data, env, self.gain_linear(), velocity)
+            voice = Voice(self.data, env, self, velocity)
             self.voices.append(voice)
 
     def stop(self):
@@ -315,6 +316,10 @@ def process_commands():
             if new_file and new_file != old_file:
                 track.file = new_file
                 threading.Thread(target=track.load, daemon=True).start()
+
+        elif cmd == 'set_gain':
+            track = get_or_create(row_id)
+            track.gain = float(msg.get('gain', 1))
 
         elif cmd == 'remove':
             with tracks_lock:

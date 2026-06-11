@@ -31,7 +31,7 @@ function volToDeg(vol) {
 function setInterpVolume(interpIdx, vol) {
   interpVolumes[interpIdx] = vol;
   for (const { id, origGain } of interpKeyData[interpIdx] ?? []) {
-    window.api.sendAudio({ cmd: 'update', id, gain: origGain * vol });
+    window.api.sendAudio({ cmd: 'set_gain', id, gain: origGain * vol });
   }
 }
 
