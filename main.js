@@ -72,9 +72,11 @@ function startAudioServer(maxPorts = 16) {
 
 function stopAudioServer() {
   if (audioProcess) {
-    sendToAudio({ cmd: 'quit' });
-    audioProcess.kill();
+    const proc = audioProcess;
     audioProcess = null;
+    sendToAudio({ cmd: 'quit' });
+    const t = setTimeout(() => proc.kill(), 1000);
+    proc.once('exit', () => clearTimeout(t));
   }
 }
 
