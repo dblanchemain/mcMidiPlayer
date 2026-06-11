@@ -125,6 +125,9 @@ function parseMidi(raw) {
         const mt = safe8(), ml = rdVL();
         if (mt === 0x51 && ml === 3) {
           evs.push({ tick, type: 'tempo', tempo: (safe8() << 16) | (safe8() << 8) | safe8() });
+        } else if (mt === 0x03) { // track name
+          evs.trackName = new TextDecoder().decode(u8.slice(p, Math.min(p + ml, chunkEnd)));
+          p = Math.min(p + ml, chunkEnd);
         } else {
           p = Math.min(p + ml, chunkEnd);
         }
@@ -214,6 +217,17 @@ async function loadPartition(folder) {
     }
   }
 
+  // Parser le MIDI d'abord pour récupérer les noms de pistes
+  const midBuf = await window.api.readBinaryFile(midEntry.full);
+  if (!midBuf) { setStatus('Erreur lecture fichier MIDI', 'err'); return; }
+
+  let midi;
+  try {
+    midi = parseMidi(midBuf);
+  } catch(e) {
+    setStatus(`MIDI invalide : ${e.message}`, 'err'); return;
+  }
+
   // Redémarrer le serveur audio avec le bon nombre de canaux
   audioReady = false;
   window.api.restartAudio(nbCanaux);
@@ -223,6 +237,7 @@ async function loadPartition(folder) {
   // Enregistrer les pistes dans l'audio server + construire les keyMaps
   const interpMaps = [];
   for (let i = 0; i < interps.length; i++) {
+    const midiTrackName = midi.tracks[i + 1]?.trackName ?? '';
     const keyMap = new Map();
     for (const k of interps[i].keys) {
       const id = `t${i + 1}_${k.key}`;
@@ -234,30 +249,18 @@ async function loadPartition(folder) {
         fadeType: k.fadeType ?? 'l',
         fadeIn:   k.fadeIn   ?? 0.05,
         fadeOut:  k.fadeOut  ?? 0.1,
-        oneShot:  false,   // durée fournie par le MIDI, le Note Off coupe la voix
+        oneShot:  false,
       });
       keyMap.set(k.key, id);
-      trackDots[id] = null; // sera rempli après addTrackRow
+      trackDots[id] = null;
     }
     interpMaps.push(keyMap);
-    addTrackRow(i, interps[i].name, interps[i].keys.length, nbCanaux);
-    // Associer les dots aux IDs
+    addTrackRow(i, interps[i].name, midiTrackName, interps[i].keys.length, nbCanaux);
     for (const k of interps[i].keys) {
       const id  = `t${i + 1}_${k.key}`;
       const dot = document.querySelector(`.track-dot[data-interp="${i}"]`);
       if (dot) trackDots[id] = dot;
     }
-  }
-
-  // Lire et parser le MIDI
-  const midBuf = await window.api.readBinaryFile(midEntry.full);
-  if (!midBuf) { setStatus('Erreur lecture fichier MIDI', 'err'); return; }
-
-  let midi;
-  try {
-    midi = parseMidi(midBuf);
-  } catch(e) {
-    setStatus(`MIDI invalide : ${e.message}`, 'err'); return;
   }
 
   schedule = buildSchedule(midi, interpMaps);
@@ -272,18 +275,30 @@ async function loadPartition(folder) {
 
 // ── UI interprètes ────────────────────────────────────────────────────────────
 
-function addTrackRow(idx, name, nKeys, nbCanaux) {
+function addTrackRow(idx, jsonName, midiName, nKeys, nbCanaux) {
   const li  = document.createElement('li');
   li.className = 'track-item';
+
   const dot = document.createElement('span');
   dot.className = 'track-dot loading';
   dot.dataset.interp = String(idx);
   li.appendChild(dot);
 
+  const nameWrap = document.createElement('span');
+  nameWrap.className = 'track-name-wrap';
+
   const nm = document.createElement('span');
   nm.className = 'track-name';
-  nm.textContent = name;
-  li.appendChild(nm);
+  nm.textContent = midiName || jsonName;
+  nameWrap.appendChild(nm);
+
+  if (midiName && midiName !== jsonName) {
+    const sub = document.createElement('span');
+    sub.className = 'track-sub';
+    sub.textContent = jsonName;
+    nameWrap.appendChild(sub);
+  }
+  li.appendChild(nameWrap);
 
   const ch = document.createElement('span');
   ch.className = 'track-ch';
