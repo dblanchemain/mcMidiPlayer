@@ -16,6 +16,56 @@ let audioReady        = false;
 let audioReadyCb      = null;
 let trackDots         = {};   // id → élément .track-dot
 let activeTrackIds    = new Set();
+let interpVolumes     = [];   // volume par interprète (0..2, défaut 1)
+let interpKeyData     = [];   // [{id, origGain}] par interprète
+
+// ── Volume knob ───────────────────────────────────────────────────────────────
+
+const VOL_MIN = 0;
+const VOL_MAX = 2;
+
+function volToDeg(vol) {
+  return (vol - 1) * 135;
+}
+
+function setInterpVolume(interpIdx, vol) {
+  interpVolumes[interpIdx] = vol;
+  for (const { id, origGain } of interpKeyData[interpIdx] ?? []) {
+    window.api.sendAudio({ cmd: 'update', id, gain: origGain * vol });
+  }
+}
+
+function initVolKnob(wrap, interpIdx) {
+  const svg = wrap.querySelector('.vol-knob');
+  const val = wrap.querySelector('.vol-val');
+  let startY, startVol;
+
+  svg.addEventListener('mousedown', e => {
+    e.preventDefault();
+    startY   = e.clientY;
+    startVol = interpVolumes[interpIdx] ?? 1;
+
+    const onMove = e2 => {
+      const delta  = (startY - e2.clientY) * 0.02;
+      const newVol = Math.round(Math.max(VOL_MIN, Math.min(VOL_MAX, startVol + delta)) * 10) / 10;
+      setInterpVolume(interpIdx, newVol);
+      svg.style.transform = `rotate(${volToDeg(newVol)}deg)`;
+      val.textContent = newVol.toFixed(1);
+    };
+    const onUp = () => {
+      document.removeEventListener('mousemove', onMove);
+      document.removeEventListener('mouseup',   onUp);
+    };
+    document.addEventListener('mousemove', onMove);
+    document.addEventListener('mouseup',   onUp);
+  });
+
+  svg.addEventListener('dblclick', () => {
+    setInterpVolume(interpIdx, 1);
+    svg.style.transform = `rotate(${volToDeg(1)}deg)`;
+    val.textContent = '1.0';
+  });
+}
 
 // ── Audio events ──────────────────────────────────────────────────────────────
 
@@ -186,6 +236,8 @@ async function loadPartition(folder) {
   totalDuration = 0;
   trackDots     = {};
   activeTrackIds.clear();
+  interpVolumes = [];
+  interpKeyData = [];
 
   const list = document.getElementById('trackList');
   list.innerHTML = '';
@@ -239,13 +291,16 @@ async function loadPartition(folder) {
   for (let i = 0; i < interps.length; i++) {
     const midiTrackName = midi.tracks[i + 1]?.trackName ?? '';
     const keyMap = new Map();
+    interpVolumes[i] = 1;
+    interpKeyData[i] = [];
     for (const k of interps[i].keys) {
-      const id = `t${i + 1}_${k.key}`;
+      const id       = `t${i + 1}_${k.key}`;
+      const origGain = k.gain ?? 1;
       window.api.sendAudio({
         cmd:      'update',
         id,
         file:     k.file,
-        gain:     k.gain     ?? 1,
+        gain:     origGain,
         fadeType: k.fadeType ?? 'l',
         fadeIn:   k.fadeIn   ?? 0.05,
         fadeOut:  k.fadeOut  ?? 0.1,
@@ -253,6 +308,7 @@ async function loadPartition(folder) {
       });
       keyMap.set(k.key, id);
       trackDots[id] = null;
+      interpKeyData[i].push({ id, origGain });
     }
     interpMaps.push(keyMap);
     addTrackRow(i, interps[i].name, midiTrackName, interps[i].keys.length, nbCanaux);
@@ -309,6 +365,32 @@ function addTrackRow(idx, jsonName, midiName, nKeys, nbCanaux) {
   info.className = 'track-info';
   info.textContent = `${nKeys} son(s)`;
   li.appendChild(info);
+
+  // Knob volume
+  const volWrap = document.createElement('div');
+  volWrap.className = 'vol-knob-wrap';
+  const NS = 'http://www.w3.org/2000/svg';
+  const svg = document.createElementNS(NS, 'svg');
+  svg.setAttribute('class', 'vol-knob');
+  svg.setAttribute('width', '28');
+  svg.setAttribute('height', '28');
+  svg.setAttribute('viewBox', '0 0 28 28');
+  svg.setAttribute('title', 'Volume (double-clic = 1.0)');
+  svg.style.transform = `rotate(${volToDeg(1)}deg)`;
+  const circle = document.createElementNS(NS, 'circle');
+  circle.setAttribute('cx', '14'); circle.setAttribute('cy', '14'); circle.setAttribute('r', '12');
+  circle.setAttribute('fill', '#2a2a3e'); circle.setAttribute('stroke', '#44475a'); circle.setAttribute('stroke-width', '2');
+  const line = document.createElementNS(NS, 'line');
+  line.setAttribute('x1', '14'); line.setAttribute('y1', '4');
+  line.setAttribute('x2', '14'); line.setAttribute('y2', '11');
+  line.setAttribute('stroke', '#7aa2f7'); line.setAttribute('stroke-width', '2.5'); line.setAttribute('stroke-linecap', 'round');
+  svg.appendChild(circle); svg.appendChild(line);
+  const volVal = document.createElement('span');
+  volVal.className = 'vol-val';
+  volVal.textContent = '1.0';
+  volWrap.appendChild(svg); volWrap.appendChild(volVal);
+  li.appendChild(volWrap);
+  initVolKnob(volWrap, idx);
 
   document.getElementById('trackList').appendChild(li);
 }

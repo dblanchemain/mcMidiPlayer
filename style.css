@@ -177,6 +177,28 @@ button:disabled { opacity: 0.4; cursor: default; }
   white-space: nowrap;
 }
 
+/* ── Volume knob ── */
+.vol-knob-wrap {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+  flex-shrink: 0;
+}
+.vol-knob {
+  cursor: ns-resize;
+  user-select: none;
+  display: block;
+  transition: filter 0.1s;
+}
+.vol-knob:hover { filter: drop-shadow(0 0 3px var(--accent)); }
+.vol-val {
+  font-size: 9px;
+  color: var(--muted);
+  text-align: center;
+  width: 28px;
+}
+
 /* ── Empty state ── */
 #emptyState {
   flex: 1;
