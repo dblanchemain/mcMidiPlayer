@@ -1,0 +1,122 @@
+name: Build & Release
+
+on:
+  push:
+    branches:
+      - master
+  workflow_dispatch:
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
+jobs:
+  build:
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            platform: win32
+          - os: macos-latest
+            platform: darwin
+          - os: ubuntu-latest
+            platform: linux
+
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install rpm (Linux)
+        if: matrix.os == 'ubuntu-latest'
+        run: sudo apt-get install -y rpm
+
+      - name: Install PortAudio (macOS)
+        if: matrix.os == 'macos-latest'
+        run: brew install portaudio
+
+      - name: Générer icon.icns (macOS)
+        if: matrix.os == 'macos-latest'
+        run: |
+          mkdir -p resources/icon.iconset
+          sips -z 16 16     resources/icon.png --out resources/icon.iconset/icon_16x16.png
+          sips -z 32 32     resources/icon.png --out resources/icon.iconset/icon_16x16@2x.png
+          sips -z 32 32     resources/icon.png --out resources/icon.iconset/icon_32x32.png
+          sips -z 64 64     resources/icon.png --out resources/icon.iconset/icon_32x32@2x.png
+          sips -z 128 128   resources/icon.png --out resources/icon.iconset/icon_128x128.png
+          sips -z 256 256   resources/icon.png --out resources/icon.iconset/icon_128x128@2x.png
+          sips -z 256 256   resources/icon.png --out resources/icon.iconset/icon_256x256.png
+          sips -z 512 512   resources/icon.png --out resources/icon.iconset/icon_256x256@2x.png
+          sips -z 512 512   resources/icon.png --out resources/icon.iconset/icon_512x512.png
+          iconutil -c icns resources/icon.iconset -o resources/icon.icns
+
+      - name: Bundle audio_server avec PyInstaller (Windows / macOS)
+        if: matrix.os != 'ubuntu-latest'
+        shell: bash
+        run: |
+          pip install pyinstaller sounddevice soundfile numpy
+          pyinstaller --onefile --clean --exclude-module jack \
+            --distpath python python/audio_server.py
+
+      - name: Cache Electron binaries
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/Library/Caches/electron
+            ~/.cache/electron
+            %APPDATA%\electron\Cache
+          key: electron-${{ runner.os }}-${{ hashFiles('package-lock.json') }}
+
+      - name: Install npm dependencies
+        run: npm install
+
+      - name: Build (electron-forge make)
+        run: npm run make
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: mcMidiPlayer-${{ matrix.platform }}
+          path: out/make/**/*
+          if-no-files-found: error
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v2
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          tag_name: build-${{ github.run_number }}
+          name: "Build #${{ github.run_number }}"
+          body: |
+            Build automatique depuis le commit ${{ github.sha }}
+          files: artifacts/**/*
+          draft: false
+          prerelease: false
