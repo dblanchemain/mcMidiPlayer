@@ -3,24 +3,34 @@
 
 // ── État ──────────────────────────────────────────────────────────────────────
 
-let schedule      = [];   // [{ sec, cmd, id, velocity? }]
+let schedule      = [];   // [{ sec, cmd, interpIdx, key, velocity? } | { sec, cmd:'bank_switch', interpIdx }]
 let totalDuration = 0;
-let playTimeouts  = [];   // IDs setTimeout pour les événements MIDI
-let playInterval  = null; // ID setInterval pour la progression
-let playOffset    = 0;    // position de départ (secondes)
-let playT0        = 0;    // performance.now() au moment du Play
+let playTimeouts  = [];
+let playInterval  = null;
+let playOffset    = 0;
+let playT0        = 0;
 let isPlaying     = false;
 let isPaused      = false;
 
-let audioReady        = false;
-let audioReadyCb      = null;
-let trackDots         = {};   // id → élément .track-dot
-let activeTrackIds    = new Set();
-let interpVolumes     = [];   // volume par interprète (0..2, défaut 1)
-let interpMuted       = [];   // mute par interprète (bool)
-let interpKeyData     = [];   // [{id, origGain}] par interprète
-let loadPending       = 0;    // fichiers WAV en cours de chargement
-let loadResolved      = 0;    // fichiers WAV chargés ou en erreur
+let audioReady    = false;
+let audioReadyCb  = null;
+
+// Par interprète
+let interpBanks   = [];   // [{ name, banks, bankIdx, activeSlot, loadedIds, activeKeyMap }]
+let interpVolumes = [];   // volume (0..2) par interprète
+let interpMuted   = [];   // mute par interprète
+let interpDots    = {};   // interpIdx → élément .track-dot
+
+// Chargement initial
+let loadPending     = 0;
+let loadResolved    = 0;
+let loadingComplete = false;
+
+// ── IDs de pistes ─────────────────────────────────────────────────────────────
+
+function mkId(slot, interpIdx, key) {
+  return `${slot}_i${interpIdx}_${key}`;
+}
 
 // ── Volume knob ───────────────────────────────────────────────────────────────
 
@@ -34,7 +44,9 @@ function volToDeg(vol) {
 function setInterpVolume(interpIdx, vol) {
   interpVolumes[interpIdx] = vol;
   if (interpMuted[interpIdx]) return;
-  for (const { id } of interpKeyData[interpIdx] ?? []) {
+  const state = interpBanks[interpIdx];
+  if (!state) return;
+  for (const id of state.loadedIds[state.activeSlot] ?? []) {
     window.api.sendAudio({ cmd: 'set_gain', id, gain: vol });
   }
 }
@@ -42,7 +54,9 @@ function setInterpVolume(interpIdx, vol) {
 function setInterpMute(interpIdx, muted) {
   interpMuted[interpIdx] = muted;
   const gain = muted ? 0 : (interpVolumes[interpIdx] ?? 1);
-  for (const { id } of interpKeyData[interpIdx] ?? []) {
+  const state = interpBanks[interpIdx];
+  if (!state) return;
+  for (const id of state.loadedIds[state.activeSlot] ?? []) {
     window.api.sendAudio({ cmd: 'set_gain', id, gain });
   }
 }
@@ -88,14 +102,15 @@ window.api.onAudioEvent(msg => {
     if (audioReadyCb) { audioReadyCb(); audioReadyCb = null; }
   } else if (msg.type === 'error') {
     setStatus(`audio: ${msg.message}`, 'err');
-  } else if (msg.type === 'loaded') {
-    const dot = trackDots[msg.id];
-    if (dot) { dot.className = 'track-dot ready'; }
-    loadResolved++;
-    checkAllLoaded();
-  } else if (msg.type === 'load_error') {
-    const dot = trackDots[msg.id];
-    if (dot) { dot.className = 'track-dot error'; dot.title = msg.message; }
+  } else if ((msg.type === 'loaded' || msg.type === 'load_error') && !loadingComplete) {
+    const m = msg.id?.match(/^([ab])_i(\d+)_/);
+    if (m) {
+      const dot = interpDots[parseInt(m[2])];
+      if (dot) {
+        if (msg.type === 'loaded') dot.className = 'track-dot ready';
+        else { dot.className = 'track-dot error'; dot.title = msg.message ?? ''; }
+      }
+    }
     loadResolved++;
     checkAllLoaded();
   }
@@ -104,8 +119,9 @@ window.api.onAudioEvent(msg => {
 function checkAllLoaded() {
   if (loadPending === 0) return;
   if (loadResolved >= loadPending) {
+    loadingComplete = true;
     enableTransport(true);
-    setStatus(`Prêt`, 'ok');
+    setStatus('Prêt', 'ok');
   } else {
     setStatus(`Chargement des sons… (${loadResolved} / ${loadPending})`);
   }
@@ -134,7 +150,6 @@ function setMidiStatus(txt) {
 // ── MIDI parser (Type 0 / Type 1, robuste) ───────────────────────────────────
 
 function parseMidi(raw) {
-  // Normalise le buffer reçu (Buffer node, Uint8Array, ArrayBuffer, ou {type:'Buffer',data:[]})
   let u8;
   if (raw instanceof Uint8Array)        u8 = raw;
   else if (raw instanceof ArrayBuffer)  u8 = new Uint8Array(raw);
@@ -155,20 +170,16 @@ function parseMidi(raw) {
   const format  = rd16();
   const nTracks = rd16();
   const ppq     = rd16() & 0x7fff;
-  if (hdrLen > 6) p += hdrLen - 6; // sauter les octets d'entête supplémentaires
+  if (hdrLen > 6) p += hdrLen - 6;
 
   const tracks = [];
 
-  // Parcourir tous les chunks présents (ignore les chunks non-MTrk)
   while (p + 8 <= total) {
     const magic    = rd32();
     const chunkLen = rd32();
     const chunkEnd = Math.min(p + chunkLen, total);
 
-    if (magic !== 0x4d54726b) { // chunk inconnu : sauter
-      p = chunkEnd;
-      continue;
-    }
+    if (magic !== 0x4d54726b) { p = chunkEnd; continue; }
 
     const evs = [];
     let tick = 0, rs = 0;
@@ -180,9 +191,9 @@ function parseMidi(raw) {
       let st = u8[p];
       if (st & 0x80) {
         p++;
-        if (st < 0xf0) rs = st; // running status uniquement pour les messages voix
+        if (st < 0xf0) rs = st;
       } else {
-        st = rs; // running status : pas d'incrément de p
+        st = rs;
       }
 
       const type = st & 0xf0;
@@ -195,23 +206,26 @@ function parseMidi(raw) {
         evs.push({ tick, type: v ? 'on' : 'off', note: n, vel: v });
       } else if (type === 0xa0 || type === 0xb0 || type === 0xe0) {
         safe8(); safe8();
-      } else if (type === 0xc0 || type === 0xd0) {
+      } else if (type === 0xc0) {
+        const prog = safe8();
+        evs.push({ tick, type: 'pc', program: prog });
+      } else if (type === 0xd0) {
         safe8();
       } else if (st === 0xff) {
         const mt = safe8(), ml = rdVL();
         if (mt === 0x51 && ml === 3) {
           evs.push({ tick, type: 'tempo', tempo: (safe8() << 16) | (safe8() << 8) | safe8() });
-        } else if (mt === 0x03) { // track name
+        } else if (mt === 0x03) {
           evs.trackName = new TextDecoder().decode(u8.slice(p, Math.min(p + ml, chunkEnd)));
           p = Math.min(p + ml, chunkEnd);
         } else {
           p = Math.min(p + ml, chunkEnd);
         }
-        if (mt === 0x2f) break; // end-of-track
+        if (mt === 0x2f) break;
       } else if (st === 0xf0 || st === 0xf7) {
         p = Math.min(p + rdVL(), chunkEnd);
       } else {
-        p++; // octet inconnu : avancer
+        p++;
       }
     }
 
@@ -222,9 +236,9 @@ function parseMidi(raw) {
   return { format, ppq, tracks };
 }
 
-// ── Construction du schedule de lecture ──────────────────────────────────────
+// ── Construction du schedule ──────────────────────────────────────────────────
 
-function buildSchedule(midi, interpMaps) {
+function buildSchedule(midi, nInterps) {
   let tempo = 500000;
   for (const ev of (midi.tracks[0] || [])) {
     if (ev.type === 'tempo') { tempo = ev.tempo; break; }
@@ -233,19 +247,85 @@ function buildSchedule(midi, interpMaps) {
 
   const events = [];
   for (let t = 1; t < midi.tracks.length; t++) {
-    const keyMap = interpMaps[t - 1];
-    if (!keyMap) continue;
+    const interpIdx = t - 1;
+    if (interpIdx >= nInterps) continue;
     for (const ev of midi.tracks[t]) {
-      if (ev.type !== 'on' && ev.type !== 'off') continue;
-      const id = keyMap.get(ev.note);
-      if (!id) continue;
-      const entry = { sec: tickSec(ev.tick), cmd: ev.type === 'on' ? 'play' : 'stop', id };
-      if (ev.type === 'on') entry.velocity = ev.vel;
-      events.push(entry);
+      if (ev.type === 'on') {
+        events.push({ sec: tickSec(ev.tick), cmd: 'play', interpIdx, key: ev.note, velocity: ev.vel });
+      } else if (ev.type === 'off') {
+        events.push({ sec: tickSec(ev.tick), cmd: 'stop', interpIdx, key: ev.note });
+      } else if (ev.type === 'pc') {
+        events.push({ sec: tickSec(ev.tick), cmd: 'bank_switch', interpIdx });
+      }
     }
   }
   events.sort((a, b) => a.sec - b.sec);
   return events;
+}
+
+// ── Gestion des banks ─────────────────────────────────────────────────────────
+
+function loadBankIntoSlot(interpIdx, bankIdx, slot) {
+  const state = interpBanks[interpIdx];
+  if (!state || bankIdx >= state.banks.length) return;
+  const bankData = state.banks[bankIdx];
+  const vol = interpMuted[interpIdx] ? 0 : (interpVolumes[interpIdx] ?? 1);
+  const ids = new Set();
+  for (const k of bankData.keys ?? []) {
+    const id = mkId(slot, interpIdx, k.key);
+    window.api.sendAudio({
+      cmd:      'update',
+      id,
+      file:     k.file,
+      gain:     k.gain     ?? 1,
+      fadeType: k.fadeType ?? 'l',
+      fadeIn:   k.fadeIn   ?? 0.05,
+      fadeOut:  k.fadeOut  ?? 0.1,
+      oneShot:  k.oneShot  ?? false,
+    });
+    if (vol !== 1) window.api.sendAudio({ cmd: 'set_gain', id, gain: vol });
+    ids.add(id);
+  }
+  state.loadedIds[slot] = ids;
+}
+
+function switchInterpBank(interpIdx) {
+  const state = interpBanks[interpIdx];
+  if (!state) return;
+  const nextBankIdx = state.bankIdx + 1;
+  if (nextBankIdx >= state.banks.length) return;
+
+  const prevSlot = state.activeSlot;
+  const nextSlot = prevSlot === 'a' ? 'b' : 'a';
+
+  state.bankIdx    = nextBankIdx;
+  state.activeSlot = nextSlot;
+
+  // Reconstruire la keyMap pour la nouvelle bank
+  state.activeKeyMap.clear();
+  for (const k of state.banks[nextBankIdx].keys ?? []) {
+    state.activeKeyMap.set(k.key, mkId(nextSlot, interpIdx, k.key));
+  }
+
+  // Appliquer le volume courant au nouveau slot
+  const vol = interpMuted[interpIdx] ? 0 : (interpVolumes[interpIdx] ?? 1);
+  if (vol !== 1) {
+    for (const id of state.loadedIds[nextSlot] ?? []) {
+      window.api.sendAudio({ cmd: 'set_gain', id, gain: vol });
+    }
+  }
+
+  // Libérer l'ancien slot
+  for (const id of state.loadedIds[prevSlot] ?? []) {
+    window.api.sendAudio({ cmd: 'remove', id });
+  }
+  state.loadedIds[prevSlot] = new Set();
+
+  // Précharger la bank suivante dans le slot libéré
+  const futureBankIdx = nextBankIdx + 1;
+  if (futureBankIdx < state.banks.length) {
+    loadBankIntoSlot(interpIdx, futureBankIdx, prevSlot);
+  }
 }
 
 // ── Chargement de la partition ────────────────────────────────────────────────
@@ -260,13 +340,13 @@ async function loadPartition(folder) {
   stopPlayback(true);
   schedule      = [];
   totalDuration = 0;
-  trackDots     = {};
-  activeTrackIds.clear();
+  interpBanks   = [];
   interpVolumes = [];
   interpMuted   = [];
-  interpKeyData = [];
-  loadPending   = 0;
-  loadResolved  = 0;
+  interpDots    = {};
+  loadPending     = 0;
+  loadResolved    = 0;
+  loadingComplete = false;
 
   const list = document.getElementById('trackList');
   list.innerHTML = '';
@@ -274,95 +354,130 @@ async function loadPartition(folder) {
   setStatus('Chargement…');
 
   const entries = await window.api.listFolder(folder);
-
-  const jsonEntries = entries
-    .filter(e => e.name.match(/_interp\d+\.json$/))
-    .sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true }));
   const midEntry = entries.find(e => e.name.endsWith('.mid'));
+  if (!midEntry) { setStatus('Aucun fichier .mid trouvé', 'err'); return; }
 
-  if (!jsonEntries.length) { setStatus('Aucun fichier *_interp*.json trouvé', 'err'); return; }
-  if (!midEntry)           { setStatus('Aucun fichier .mid trouvé', 'err'); return; }
+  // Scan *_bank<N>.json
+  const bankPattern = /^(.+)_bank(\d+)\.json$/;
+  const banksByName = new Map();
+  for (const e of entries) {
+    const m = e.name.match(bankPattern);
+    if (!m) continue;
+    const name = m[1];
+    const num  = parseInt(m[2]);
+    if (!banksByName.has(name)) banksByName.set(name, []);
+    banksByName.get(name).push({ num, path: e.full });
+  }
 
-  // Lire les JSON
-  const interps = [];
-  let nbCanaux = 2;
-  for (const je of jsonEntries) {
-    const text = await window.api.readTextFile(je.full);
-    if (!text) { setStatus(`Erreur lecture ${je.name}`, 'err'); return; }
-    try {
-      const data = JSON.parse(text);
-      nbCanaux = Math.max(nbCanaux, data.nbCanaux ?? 2);
-      interps.push({ name: je.name.replace('.json', ''), keys: data.keys || [] });
-    } catch(e) {
-      setStatus(`JSON invalide : ${je.name}`, 'err'); return;
+  // Compatibilité ancienne structure *_interp<N>.json → banque unique
+  if (!banksByName.size) {
+    const oldPattern = /^(.+_interp\d+)\.json$/;
+    for (const e of entries) {
+      const m = e.name.match(oldPattern);
+      if (!m) continue;
+      banksByName.set(m[1], [{ num: 1, path: e.full }]);
     }
   }
 
-  // Parser le MIDI d'abord pour récupérer les noms de pistes
-  const midBuf = await window.api.readBinaryFile(midEntry.full);
-  if (!midBuf) { setStatus('Erreur lecture fichier MIDI', 'err'); return; }
+  if (!banksByName.size) { setStatus('Aucun fichier *_bank*.json trouvé', 'err'); return; }
 
-  let midi;
-  try {
-    midi = parseMidi(midBuf);
-  } catch(e) {
-    setStatus(`MIDI invalide : ${e.message}`, 'err'); return;
+  // Trier les interprètes par nom (ordre numérique)
+  const sortedNames = [...banksByName.keys()].sort((a, b) =>
+    a.localeCompare(b, undefined, { numeric: true }));
+
+  // Lire tous les JSON (toutes les banks) pour connaître nbCanaux, polyphonie et les clés
+  let nbCanaux = 2, polyphonie = 0;
+  const allBankData = [];
+
+  for (const name of sortedNames) {
+    const banks = banksByName.get(name).sort((a, b) => a.num - b.num);
+    const bankDataArr = [];
+    for (const b of banks) {
+      const text = await window.api.readTextFile(b.path);
+      if (!text) { bankDataArr.push({ keys: [] }); continue; }
+      try {
+        const data = JSON.parse(text);
+        nbCanaux  = Math.max(nbCanaux,  data.nbCanaux  ?? 2);
+        polyphonie = Math.max(polyphonie, data.polyphonie ?? 0);
+        bankDataArr.push({ keys: data.keys ?? [] });
+      } catch (_) {
+        bankDataArr.push({ keys: [] });
+      }
+    }
+    allBankData.push(bankDataArr);
   }
 
-  // Redémarrer le serveur audio avec le bon nombre de canaux
+  // Parser le MIDI
+  const midBuf = await window.api.readBinaryFile(midEntry.full);
+  if (!midBuf) { setStatus('Erreur lecture fichier MIDI', 'err'); return; }
+  let midi;
+  try { midi = parseMidi(midBuf); }
+  catch (e) { setStatus(`MIDI invalide : ${e.message}`, 'err'); return; }
+
+  // Redémarrer le serveur audio
   audioReady = false;
   window.api.restartAudio(nbCanaux);
   setStatus(`audio: démarrage (${nbCanaux} canaux)…`);
   await waitAudioReady();
+  if (polyphonie > 0) window.api.sendAudio({ cmd: 'set_polyphonie', value: polyphonie });
 
-  // Enregistrer les pistes dans l'audio server + construire les keyMaps
-  const interpMaps = [];
-  for (let i = 0; i < interps.length; i++) {
-    const midiTrackName = midi.tracks[i + 1]?.trackName ?? '';
-    const keyMap = new Map();
+  // Initialiser l'état par interprète
+  for (let i = 0; i < sortedNames.length; i++) {
+    const name       = sortedNames[i];
+    const bankDataArr = allBankData[i];
+
     interpVolumes[i] = 1;
     interpMuted[i]   = false;
-    interpKeyData[i] = [];
-    for (const k of interps[i].keys) {
-      const id       = `t${i + 1}_${k.key}`;
-      const origGain = k.gain ?? 1;
-      window.api.sendAudio({
-        cmd:      'update',
-        id,
-        file:     k.file,
-        gain:     origGain,
-        fadeType: k.fadeType ?? 'l',
-        fadeIn:   k.fadeIn   ?? 0.05,
-        fadeOut:  k.fadeOut  ?? 0.1,
-        oneShot:  k.oneShot  ?? false,
-      });
-      loadPending++;
-      keyMap.set(k.key, id);
-      trackDots[id] = null;
-      interpKeyData[i].push({ id, origGain });
+
+    const state = {
+      name,
+      banks:        bankDataArr,
+      bankIdx:      0,
+      activeSlot:   'a',
+      loadedIds:    { a: new Set(), b: new Set() },
+      activeKeyMap: new Map(),
+    };
+    interpBanks.push(state);
+
+    // Bank 0 → slot A
+    loadBankIntoSlot(i, 0, 'a');
+    loadPending += bankDataArr[0]?.keys.length ?? 0;
+
+    // Bank 1 → slot B (préchargement)
+    if (bankDataArr.length > 1) {
+      loadBankIntoSlot(i, 1, 'b');
+      loadPending += bankDataArr[1]?.keys.length ?? 0;
     }
-    interpMaps.push(keyMap);
-    addTrackRow(i, interps[i].name, midiTrackName, interps[i].keys.length, nbCanaux);
-    for (const k of interps[i].keys) {
-      const id  = `t${i + 1}_${k.key}`;
-      const dot = document.querySelector(`.track-dot[data-interp="${i}"]`);
-      if (dot) trackDots[id] = dot;
+
+    // keyMap initiale = bank 0 slot A
+    for (const k of bankDataArr[0]?.keys ?? []) {
+      state.activeKeyMap.set(k.key, mkId('a', i, k.key));
     }
+
+    const midiTrackName = midi.tracks[i + 1]?.trackName ?? '';
+    addTrackRow(i, name, midiTrackName, bankDataArr[0]?.keys.length ?? 0, bankDataArr.length, nbCanaux);
   }
 
-  schedule = buildSchedule(midi, interpMaps);
+  schedule = buildSchedule(midi, sortedNames.length);
   if (!schedule.length) { setStatus('Aucun événement MIDI à jouer', 'err'); return; }
 
-  totalDuration = (schedule.at(-1).sec ?? 0) + 1;
+  const playEvents = schedule.filter(e => e.cmd !== 'bank_switch');
+  totalDuration = (playEvents.at(-1)?.sec ?? 0) + 1;
   updateProgress(0);
   setMidiStatus(`MIDI: ${midi.tracks.length - 1} piste(s), ${schedule.length} év.`);
-  setStatus(`Chargement des sons… (0 / ${loadPending})`);
-  // Le transport est activé par checkAllLoaded() quand tous les fichiers sont chargés
+
+  if (loadPending > 0) {
+    setStatus(`Chargement des sons… (0 / ${loadPending})`);
+  } else {
+    loadingComplete = true;
+    enableTransport(true);
+    setStatus('Prêt', 'ok');
+  }
 }
 
 // ── UI interprètes ────────────────────────────────────────────────────────────
 
-function addTrackRow(idx, jsonName, midiName, nKeys, nbCanaux) {
+function addTrackRow(idx, jsonName, midiName, nKeys, nBanks, nbCanaux) {
   const li  = document.createElement('li');
   li.className = 'track-item';
 
@@ -370,6 +485,7 @@ function addTrackRow(idx, jsonName, midiName, nKeys, nbCanaux) {
   dot.className = 'track-dot loading';
   dot.dataset.interp = String(idx);
   li.appendChild(dot);
+  interpDots[idx] = dot;
 
   const nameWrap = document.createElement('span');
   nameWrap.className = 'track-name-wrap';
@@ -408,7 +524,9 @@ function addTrackRow(idx, jsonName, midiName, nKeys, nbCanaux) {
 
   const info = document.createElement('span');
   info.className = 'track-info';
-  info.textContent = `${nKeys} son(s)`;
+  info.textContent = nBanks > 1
+    ? `${nKeys} son(s) · ${nBanks} banks`
+    : `${nKeys} son(s)`;
   li.appendChild(info);
 
   // Knob volume
@@ -456,7 +574,15 @@ function play() {
     if (ev.sec < playOffset - 0.05) continue;
     const delay = Math.max(0, (ev.sec - playOffset) * 1000);
     playTimeouts.push(setTimeout(() => {
-      const msg = { cmd: ev.cmd, id: ev.id };
+      if (ev.cmd === 'bank_switch') {
+        switchInterpBank(ev.interpIdx);
+        return;
+      }
+      const state = interpBanks[ev.interpIdx];
+      if (!state || interpMuted[ev.interpIdx]) return;
+      const id = state.activeKeyMap.get(ev.key);
+      if (!id) return;
+      const msg = { cmd: ev.cmd, id };
       if (ev.velocity != null) msg.velocity = ev.velocity;
       window.api.sendAudio(msg);
     }, delay));
@@ -502,11 +628,10 @@ function clearAllTimers() {
 }
 
 function stopAllTracks() {
-  const sent = new Set();
-  for (const ev of schedule) {
-    if (!sent.has(ev.id)) {
-      window.api.sendAudio({ cmd: 'stop', id: ev.id });
-      sent.add(ev.id);
+  for (const state of interpBanks) {
+    if (!state) continue;
+    for (const id of state.loadedIds[state.activeSlot] ?? []) {
+      window.api.sendAudio({ cmd: 'stop', id });
     }
   }
 }
@@ -524,7 +649,7 @@ function fmt(s) {
   return `${m}:${String(sec).padStart(2, '0')}`;
 }
 
-// ── Seek via clic sur la barre de progression ─────────────────────────────────
+// ── Seek ──────────────────────────────────────────────────────────────────────
 
 document.getElementById('progressBar').addEventListener('click', e => {
   if (!schedule.length) return;

@@ -228,6 +228,27 @@ def snapshot_tracks():
     with tracks_lock:
         return list(tracks.values())
 
+# ── Polyphonie globale ────────────────────────────────────────────────────────
+
+_max_voices = 0  # 0 = illimité
+
+def _count_voices():
+    return sum(
+        sum(1 for v in t.voices if v.active)
+        for t in snapshot_tracks()
+    )
+
+def _steal_voice():
+    """Relâche la voix la plus avancée pour libérer une place."""
+    best_v, best_pos = None, -1
+    for t in snapshot_tracks():
+        with t.lock:
+            for v in t.voices:
+                if v.active and not v.releasing and v.pos > best_pos:
+                    best_pos, best_v = v.pos, v
+    if best_v:
+        best_v.release()
+
 
 def run_jack():
     client    = jack.Client('mcMidiPlayer', no_start_server=True)
@@ -304,6 +325,10 @@ def process_commands():
         if cmd == 'quit':
             break
 
+        elif cmd == 'set_polyphonie':
+            global _max_voices
+            _max_voices = max(0, int(msg.get('value', 0)))
+
         elif cmd == 'update':
             track = get_or_create(row_id)
             old_file = track.file
@@ -332,6 +357,8 @@ def process_commands():
         elif cmd == 'play':
             track    = get_or_create(row_id)
             velocity = int(msg.get('velocity', 127))
+            if _max_voices > 0 and _count_voices() >= _max_voices:
+                _steal_voice()
             track.start(velocity)
 
         elif cmd == 'stop':
