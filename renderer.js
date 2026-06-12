@@ -560,8 +560,30 @@ function addTrackRow(idx, jsonName, midiName, nKeys, nBanks, nbCanaux) {
 
 // ── Transport ─────────────────────────────────────────────────────────────────
 
+function resetBanks() {
+  for (let i = 0; i < interpBanks.length; i++) {
+    const state = interpBanks[i];
+    if (!state) continue;
+    for (const slot of ['a', 'b']) {
+      for (const id of state.loadedIds[slot] ?? []) {
+        window.api.sendAudio({ cmd: 'remove', id });
+      }
+      state.loadedIds[slot] = new Set();
+    }
+    state.bankIdx    = 0;
+    state.activeSlot = 'a';
+    state.activeKeyMap.clear();
+    loadBankIntoSlot(i, 0, 'a');
+    for (const k of state.banks[0]?.keys ?? []) {
+      state.activeKeyMap.set(k.key, mkId('a', i, k.key));
+    }
+    if (state.banks.length > 1) loadBankIntoSlot(i, 1, 'b');
+  }
+}
+
 function play() {
   if (!schedule.length || isPlaying) return;
+  if (playOffset === 0) resetBanks();
   isPlaying = true;
   isPaused  = false;
   playT0    = performance.now();
