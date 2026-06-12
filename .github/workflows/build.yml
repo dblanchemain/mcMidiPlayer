@@ -67,9 +67,13 @@ jobs:
         if: matrix.os != 'ubuntu-latest'
         shell: bash
         run: |
-          pip install pyinstaller sounddevice soundfile numpy
-          pyinstaller --onefile --clean --exclude-module jack \
-            --distpath python python/audio_server.py
+          pip install pyinstaller sounddevice soundfile numpy scipy
+          pyinstaller --onefile --clean --noconfirm \
+            --exclude-module jack \
+            --collect-submodules scipy.signal \
+            --hidden-import sounddevice \
+            --distpath python \
+            python/audio_server.py
 
       - name: Cache Electron binaries
         uses: actions/cache@v4
