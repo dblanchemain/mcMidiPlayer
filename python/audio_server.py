@@ -33,6 +33,21 @@ except ImportError as e:
     sys.stdout.flush()
     sys.exit(1)
 
+try:
+    from math import gcd
+    from scipy.signal import resample_poly as _resample_poly
+    def _resample(data, from_sr, to_sr):
+        if from_sr == to_sr:
+            return data
+        g = gcd(int(from_sr), int(to_sr))
+        return _resample_poly(data, int(to_sr) // g, int(from_sr) // g,
+                              axis=0).astype(np.float32)
+except ImportError:
+    def _resample(data, from_sr, to_sr):
+        return data  # pas de scipy : lecture sans resampling
+
+OUTPUT_SR = None  # taux d'échantillonnage de sortie, fixé au démarrage du backend
+
 if USE_JACK:
     try:
         import jack
@@ -143,6 +158,9 @@ class Track:
             return False
         try:
             data, sr = sf.read(self.file, always_2d=True, dtype='float32')
+            if OUTPUT_SR and sr != OUTPUT_SR:
+                data = _resample(data, sr, OUTPUT_SR)
+                sr   = OUTPUT_SR
             with self.lock:
                 self.data = data
                 self.sr   = sr
@@ -251,7 +269,9 @@ def _steal_voice():
 
 
 def run_jack():
+    global OUTPUT_SR
     client    = jack.Client('mcMidiPlayer', no_start_server=True)
+    OUTPUT_SR = client.samplerate
     MAX_PORTS = MAX_PORTS_CFG
     out_ports = [client.outports.register(f'out_{i+1}') for i in range(MAX_PORTS)]
 
@@ -281,7 +301,13 @@ def run_jack():
 
 
 def run_sounddevice():
-    SR    = 44100
+    global OUTPUT_SR
+    try:
+        info = sd.query_devices(kind='output')
+        SR   = int(info.get('default_samplerate', 48000))
+    except Exception:
+        SR   = 48000
+    OUTPUT_SR = SR
     BLOCK = 1024
 
     def audio_callback(outdata, frames, time_info, status):
