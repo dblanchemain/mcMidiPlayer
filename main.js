@@ -74,7 +74,7 @@ function stopAudioServer() {
   if (audioProcess) {
     const proc = audioProcess;
     audioProcess = null;
-    sendToAudio({ cmd: 'quit' });
+    if (proc.stdin.writable) proc.stdin.write(JSON.stringify({ cmd: 'quit' }) + '\n');
     const t = setTimeout(() => proc.kill(), 1000);
     proc.once('exit', () => clearTimeout(t));
   }
