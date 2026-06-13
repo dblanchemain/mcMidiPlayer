@@ -220,6 +220,10 @@ function parseMidi(raw) {
         } else if (mt === 0x03) {
           evs.trackName = new TextDecoder().decode(u8.slice(p, Math.min(p + ml, chunkEnd)));
           p = Math.min(p + ml, chunkEnd);
+        } else if (mt === 0x06) {
+          const text = new TextDecoder().decode(u8.slice(p, Math.min(p + ml, chunkEnd))).trim();
+          evs.push({ tick, type: 'marker', text });
+          p = Math.min(p + ml, chunkEnd);
         } else {
           p = Math.min(p + ml, chunkEnd);
         }
@@ -248,6 +252,20 @@ function buildSchedule(midi, nInterps) {
   const tickSec = tick => (tick * tempo) / (midi.ppq * 1e6);
 
   const events = [];
+
+  // Markers globaux (track 0) → s'appliquent à tous les interprètes
+  for (const ev of (midi.tracks[0] || [])) {
+    if (ev.type === 'marker') {
+      const m = ev.text.match(/^bank(\d+)$/i);
+      if (m) {
+        const bankIdx = parseInt(m[1]) - 1;
+        for (let i = 0; i < nInterps; i++) {
+          events.push({ sec: tickSec(ev.tick), cmd: 'goto_bank', interpIdx: i, bankIdx });
+        }
+      }
+    }
+  }
+
   for (let t = 1; t < midi.tracks.length; t++) {
     const interpIdx = t - 1;
     if (interpIdx >= nInterps) continue;
@@ -258,9 +276,15 @@ function buildSchedule(midi, nInterps) {
         events.push({ sec: tickSec(ev.tick), cmd: 'stop', interpIdx, key: ev.note });
       } else if (ev.type === 'pc') {
         events.push({ sec: tickSec(ev.tick), cmd: 'bank_switch', interpIdx });
+      } else if (ev.type === 'marker') {
+        const m = ev.text.match(/^bank(\d+)$/i);
+        if (m) {
+          events.push({ sec: tickSec(ev.tick), cmd: 'goto_bank', interpIdx, bankIdx: parseInt(m[1]) - 1 });
+        }
       }
     }
   }
+
   events.sort((a, b) => a.sec - b.sec);
   return events;
 }
@@ -325,6 +349,42 @@ function switchInterpBank(interpIdx) {
 
   // Précharger la bank suivante dans le slot libéré
   const futureBankIdx = nextBankIdx + 1;
+  if (futureBankIdx < state.banks.length) {
+    loadBankIntoSlot(interpIdx, futureBankIdx, prevSlot);
+  }
+}
+
+function gotoInterpBank(interpIdx, targetBankIdx) {
+  const state = interpBanks[interpIdx];
+  if (!state || targetBankIdx < 0 || targetBankIdx >= state.banks.length) return;
+  if (targetBankIdx === state.bankIdx) return;
+
+  const prevSlot = state.activeSlot;
+  const nextSlot = prevSlot === 'a' ? 'b' : 'a';
+
+  loadBankIntoSlot(interpIdx, targetBankIdx, nextSlot);
+
+  state.bankIdx    = targetBankIdx;
+  state.activeSlot = nextSlot;
+
+  state.activeKeyMap.clear();
+  for (const k of state.banks[targetBankIdx].keys ?? []) {
+    state.activeKeyMap.set(k.key, mkId(nextSlot, interpIdx, k.key));
+  }
+
+  const vol = interpMuted[interpIdx] ? 0 : (interpVolumes[interpIdx] ?? 1);
+  if (vol !== 1) {
+    for (const id of state.loadedIds[nextSlot] ?? []) {
+      window.api.sendAudio({ cmd: 'set_gain', id, gain: vol });
+    }
+  }
+
+  for (const id of state.loadedIds[prevSlot] ?? []) {
+    window.api.sendAudio({ cmd: 'remove', id });
+  }
+  state.loadedIds[prevSlot] = new Set();
+
+  const futureBankIdx = targetBankIdx + 1;
   if (futureBankIdx < state.banks.length) {
     loadBankIntoSlot(interpIdx, futureBankIdx, prevSlot);
   }
@@ -463,7 +523,7 @@ async function loadPartition(folder) {
   schedule = buildSchedule(midi, sortedNames.length);
   if (!schedule.length) { setStatus('Aucun événement MIDI à jouer', 'err'); return; }
 
-  const playEvents = schedule.filter(e => e.cmd !== 'bank_switch');
+  const playEvents = schedule.filter(e => e.cmd !== 'bank_switch' && e.cmd !== 'goto_bank');
   totalDuration = (playEvents.at(-1)?.sec ?? 0) + 1;
   updateProgress(0);
   setMidiStatus(`MIDI: ${midi.tracks.length - 1} piste(s), ${schedule.length} év.`);
@@ -600,6 +660,10 @@ function play() {
     playTimeouts.push(setTimeout(() => {
       if (ev.cmd === 'bank_switch') {
         switchInterpBank(ev.interpIdx);
+        return;
+      }
+      if (ev.cmd === 'goto_bank') {
+        gotoInterpBank(ev.interpIdx, ev.bankIdx);
         return;
       }
       const state = interpBanks[ev.interpIdx];
