@@ -21,6 +21,10 @@ let interpVolumes = [];   // volume (0..2) par interprète
 let interpMuted   = [];   // mute par interprète
 let interpDots    = {};   // interpIdx → élément .track-dot
 
+// IDs audio en cours de lecture ; pendingRemove = à supprimer dès leur stop naturel
+const playingIds    = new Set();
+const pendingRemove = new Set();
+
 // Chargement initial
 let loadPending     = 0;
 let loadResolved    = 0;
@@ -341,9 +345,13 @@ function switchInterpBank(interpIdx) {
     }
   }
 
-  // Libérer l'ancien slot
+  // Libérer l'ancien slot : différer le remove pour les sons encore en lecture
   for (const id of state.loadedIds[prevSlot] ?? []) {
-    window.api.sendAudio({ cmd: 'remove', id });
+    if (playingIds.has(id)) {
+      pendingRemove.add(id);   // remove envoyé automatiquement à la réception du stop
+    } else {
+      window.api.sendAudio({ cmd: 'remove', id });
+    }
   }
   state.loadedIds[prevSlot] = new Set();
 
@@ -380,7 +388,11 @@ function gotoInterpBank(interpIdx, targetBankIdx) {
   }
 
   for (const id of state.loadedIds[prevSlot] ?? []) {
-    window.api.sendAudio({ cmd: 'remove', id });
+    if (playingIds.has(id)) {
+      pendingRemove.add(id);
+    } else {
+      window.api.sendAudio({ cmd: 'remove', id });
+    }
   }
   state.loadedIds[prevSlot] = new Set();
 
@@ -673,6 +685,15 @@ function play() {
       const msg = { cmd: ev.cmd, id };
       if (ev.velocity != null) msg.velocity = ev.velocity;
       window.api.sendAudio(msg);
+      if (ev.cmd === 'play') {
+        playingIds.add(id);
+      } else if (ev.cmd === 'stop') {
+        playingIds.delete(id);
+        if (pendingRemove.has(id)) {
+          pendingRemove.delete(id);
+          window.api.sendAudio({ cmd: 'remove', id });
+        }
+      }
     }, delay));
   }
 
@@ -713,6 +734,8 @@ function clearAllTimers() {
   playTimeouts.forEach(clearTimeout);
   playTimeouts = [];
   if (playInterval) { clearInterval(playInterval); playInterval = null; }
+  playingIds.clear();
+  pendingRemove.clear();
 }
 
 function stopAllTracks() {
