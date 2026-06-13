@@ -22,6 +22,9 @@ _parser.add_argument('--max-ports', type=int, default=16)
 _args, _ = _parser.parse_known_args()
 MAX_PORTS_CFG = _args.max_ports
 
+_current_device   = None  # int ou None (None = défaut / JACK)
+_current_channels = None  # int ou None (None = auto)
+
 PLATFORM = platform.system()
 USE_JACK  = PLATFORM == 'Linux'
 
@@ -297,13 +300,14 @@ def run_jack():
             pass
 
         emit({'type': 'ready', 'backend': 'jack', 'maxPorts': MAX_PORTS})
-        process_commands()
+        return process_commands()
 
 
 def run_sounddevice():
     global OUTPUT_SR
+    device = _current_device
     try:
-        info = sd.query_devices(kind='output')
+        info = sd.query_devices(device, 'output') if device is not None else sd.query_devices(kind='output')
         SR   = int(info.get('default_samplerate', 48000))
     except Exception:
         SR   = 48000
@@ -319,14 +323,17 @@ def run_sounddevice():
         for ch in range(n_out):
             outdata[:, ch] += bufs[ch]
 
-    try:
-        info  = sd.query_devices(kind='output')
-        n_out = min(info.get('max_output_channels', 2), MAX_PORTS_CFG)
-    except Exception:
-        n_out = 2
+    if _current_channels is not None:
+        n_out = min(_current_channels, MAX_PORTS_CFG)
+    else:
+        try:
+            info  = sd.query_devices(device, 'output') if device is not None else sd.query_devices(kind='output')
+            n_out = min(info.get('max_output_channels', 2), MAX_PORTS_CFG)
+        except Exception:
+            n_out = 2
 
     try:
-        stream = sd.OutputStream(samplerate=SR, channels=n_out,
+        stream = sd.OutputStream(device=device, samplerate=SR, channels=n_out,
                                  blocksize=BLOCK, dtype='float32',
                                  callback=audio_callback)
     except Exception as e:
@@ -335,7 +342,7 @@ def run_sounddevice():
 
     with stream:
         emit({'type': 'ready', 'backend': 'sounddevice', 'maxPorts': n_out})
-        process_commands()
+        return process_commands()
 
 
 def process_commands():
@@ -392,17 +399,51 @@ def process_commands():
             if not track.one_shot:
                 track.stop()
 
+        elif cmd == 'list_devices':
+            try:
+                devices  = sd.query_devices()
+                hostapis = sd.query_hostapis()
+                _, default_out = sd.default.device
+                dlist = []
+                for i, d in enumerate(devices):
+                    if d['max_output_channels'] < 1:
+                        continue
+                    api_idx  = d.get('hostapi', 0)
+                    api_name = hostapis[api_idx]['name'] if api_idx < len(hostapis) else ''
+                    dlist.append({
+                        'index':               i,
+                        'name':                d['name'],
+                        'max_output_channels': d['max_output_channels'],
+                        'default_samplerate':  d['default_samplerate'],
+                        'is_default':          i == default_out,
+                        'hostapi':             api_name,
+                    })
+                emit({'type': 'devices', 'list': dlist})
+            except Exception as ex:
+                emit({'type': 'error', 'message': str(ex)})
+
+        elif cmd == 'set_device':
+            global _current_device, _current_channels
+            dev = msg.get('device')
+            ch  = msg.get('channels')
+            _current_device   = int(dev) if dev is not None else None
+            _current_channels = int(ch)  if ch  is not None else None
+            return 'restart'
+
 
 if __name__ == '__main__':
     signal.signal(signal.SIGTERM, lambda *_: cmd_queue.put({'cmd': 'quit'}))
 
     threading.Thread(target=read_stdin,    daemon=True).start()
     threading.Thread(target=event_emitter, daemon=True).start()
-    if USE_JACK:
-        try:
-            run_jack()
-        except Exception as e:
-            emit({'type': 'error', 'message': f'JACK indisponible ({e}), bascule sur sounddevice'})
-            run_sounddevice()
-    else:
-        run_sounddevice()
+    while True:
+        if USE_JACK and _current_device is None:
+            try:
+                result = run_jack()
+            except Exception as e:
+                emit({'type': 'error', 'message': f'JACK indisponible ({e}), bascule sur sounddevice'})
+                result = run_sounddevice()
+        else:
+            result = run_sounddevice()
+        if result != 'restart':
+            break

@@ -14,8 +14,111 @@
     <span id="statusBar" class="status">audio: démarrage…</span>
     <span id="midiStatus" class="status">MIDI: —</span>
     <button id="btnOpen">Ouvrir dossier</button>
-    <select id="themeSelect" title="Thème"></select>
+    <button id="btnPrefs">Préférences</button>
   </header>
+
+  <!-- ── Popup Préférences ── -->
+  <div id="prefsPopup" class="pref-popup hidden">
+    <div class="pref-popup-hd">
+      Préférences
+      <button class="pref-close-btn" id="prefsClose" title="Fermer">✕</button>
+    </div>
+    <div id="prefTabBar" class="pref-tab-bar">
+      <div class="pref-tab actif" data-pane="son" onclick="prefShowTab('son');prefSonRemplirUI()">Son</div>
+      <div class="pref-tab" data-pane="theme" onclick="prefShowTab('theme');prefThemeRemplirUI()">Thème</div>
+    </div>
+
+    <!-- ── Son ── -->
+    <div id="prefPaneSon" class="pref-pane actif">
+      <table border="0" cellpadding="5" style="width:100%;">
+        <tr>
+          <td style="white-space:nowrap;">Sortie :</td>
+          <td>
+            <select id="prefSonDevice" style="width:100%;" onchange="prefSonSetDevice(this.value)">
+              <option value="">— défaut système —</option>
+            </select>
+          </td>
+        </tr>
+        <tr>
+          <td colspan="2">
+            <div id="prefSonStatus" style="font-size:0.78em;color:var(--muted);margin-top:2px;"></div>
+          </td>
+        </tr>
+      </table>
+    </div>
+
+    <!-- ── Thème ── -->
+    <div id="prefPaneTheme" class="pref-pane">
+      <table border="0" cellpadding="5" style="width:100%;">
+        <tr>
+          <td style="white-space:nowrap;">Thème :</td>
+          <td>
+            <select id="prefThemePreset" style="width:100%;" onchange="prefThemePresetChange(this.value)">
+              <option value="Marine">Marine</option>
+              <option value="Sombre">Sombre</option>
+              <option value="Marbré">Marbré</option>
+              <option value="Clair">Clair</option>
+              <option value="Boisé">Boisé</option>
+              <option value="perso">Personnalisé</option>
+            </select>
+          </td>
+        </tr>
+        <tr>
+          <td style="white-space:nowrap;">Fond :</td>
+          <td><input type="color" id="prefTcBg" oninput="prefThemeCustomChange()" style="width:60px;height:26px;cursor:pointer;"/></td>
+        </tr>
+        <tr>
+          <td style="white-space:nowrap;">Surface :</td>
+          <td><input type="color" id="prefTcSurface" oninput="prefThemeCustomChange()" style="width:60px;height:26px;cursor:pointer;"/></td>
+        </tr>
+        <tr>
+          <td style="white-space:nowrap;">Bordures :</td>
+          <td><input type="color" id="prefTcBorder" oninput="prefThemeCustomChange()" style="width:60px;height:26px;cursor:pointer;"/></td>
+        </tr>
+        <tr>
+          <td style="white-space:nowrap;">Texte :</td>
+          <td><input type="color" id="prefTcText" oninput="prefThemeCustomChange()" style="width:60px;height:26px;cursor:pointer;"/></td>
+        </tr>
+        <tr>
+          <td style="white-space:nowrap;">Accentuation :</td>
+          <td><input type="color" id="prefTcAccent" oninput="prefThemeCustomChange()" style="width:60px;height:26px;cursor:pointer;"/></td>
+        </tr>
+        <tr>
+          <td style="white-space:nowrap;">Alerte :</td>
+          <td><input type="color" id="prefTcRed" oninput="prefThemeCustomChange()" style="width:60px;height:26px;cursor:pointer;"/></td>
+        </tr>
+        <tr>
+          <td style="white-space:nowrap;">Succès :</td>
+          <td><input type="color" id="prefTcGreen" oninput="prefThemeCustomChange()" style="width:60px;height:26px;cursor:pointer;"/></td>
+        </tr>
+        <tr>
+          <td style="white-space:nowrap;">Secondaire :</td>
+          <td><input type="color" id="prefTcMuted" oninput="prefThemeCustomChange()" style="width:60px;height:26px;cursor:pointer;"/></td>
+        </tr>
+      </table>
+      <button onclick="prefThemeReset()" style="font-size:0.8em;margin:4px 8px 0;">Réinitialiser</button>
+      <hr style="margin:8px 0;border-color:var(--border);"/>
+      <div style="font-size:0.82em;font-weight:bold;margin-bottom:5px;color:var(--text);padding:0 8px;">Thèmes personnalisés</div>
+      <div style="display:flex;gap:4px;padding:0 8px;margin-bottom:4px;">
+        <input type="text" id="prefThemeSaveName" placeholder="Nom du thème…"
+               style="flex:1;font-size:0.82em;background:var(--bg);border:1px solid var(--border);color:var(--text);border-radius:4px;padding:3px 6px;"/>
+        <button onclick="prefThemeSauvegarderPerso()" style="font-size:0.8em;">Sauvegarder</button>
+      </div>
+      <div style="display:flex;gap:4px;padding:0 8px;margin-bottom:6px;">
+        <select id="prefThemesSauvegardes"
+                style="flex:1;font-size:0.82em;background:var(--bg);border:1px solid var(--border);color:var(--text);border-radius:4px;padding:2px;">
+          <option value="">— choisir —</option>
+        </select>
+        <button onclick="prefThemeChargerPerso()" style="font-size:0.8em;">Charger</button>
+        <button onclick="prefThemeSupprimerPerso()" style="font-size:0.8em;" title="Supprimer">✕</button>
+      </div>
+      <div style="display:flex;gap:4px;padding:0 8px 8px;">
+        <button onclick="prefThemeExporter()" style="font-size:0.8em;flex:1;" title="Exporter en JSON">⬇ Exporter</button>
+        <button onclick="prefThemeImporter()" style="font-size:0.8em;flex:1;" title="Importer depuis JSON">⬆ Importer</button>
+      </div>
+      <input type="file" id="prefThemeImportFile" accept=".json" style="display:none" onchange="prefThemeImporterFichier(this)"/>
+    </div>
+  </div>
 
   <div id="transport">
     <button id="btnPlay"  disabled>▶ Lire</button>

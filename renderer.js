@@ -113,6 +113,8 @@ window.api.onAudioEvent(msg => {
     }
     loadResolved++;
     checkAllLoaded();
+  } else if (msg.type === 'devices') {
+    prefAudioHandleDevices(msg.list);
   }
 });
 
@@ -703,3 +705,55 @@ document.getElementById('btnStop').addEventListener('click',  () => stopPlayback
 
 enableTransport(false);
 initThemes();
+
+// ── Popup Préférences ─────────────────────────────────────────────────────────
+
+let _prefSonDeviceIndex = null;
+
+document.getElementById('btnPrefs').addEventListener('click', () => {
+  document.getElementById('prefsPopup').classList.toggle('hidden');
+});
+
+document.getElementById('prefsClose').addEventListener('click', () => {
+  document.getElementById('prefsPopup').classList.add('hidden');
+});
+
+document.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape') {
+    document.getElementById('prefsPopup').classList.add('hidden');
+  }
+});
+
+function prefShowTab(tab) {
+  document.querySelectorAll('.pref-tab').forEach(t => t.classList.remove('actif'));
+  document.querySelectorAll('.pref-pane').forEach(p => p.classList.remove('actif'));
+  document.getElementById('prefPane' + tab.charAt(0).toUpperCase() + tab.slice(1)).classList.add('actif');
+  document.querySelector(`.pref-tab[data-pane="${tab}"]`).classList.add('actif');
+}
+
+function prefSonRemplirUI() {
+  const status = document.getElementById('prefSonStatus');
+  if (status) status.textContent = 'Chargement…';
+  window.api.sendAudio({ cmd: 'list_devices' });
+}
+
+function prefAudioHandleDevices(list) {
+  const sel    = document.getElementById('prefSonDevice');
+  const status = document.getElementById('prefSonStatus');
+  if (!sel) return;
+  let opts = '<option value="">— défaut système —</option>';
+  for (const d of list) {
+    const label    = `[${d.index}] ${d.name} (${d.max_output_channels}ch, ${d.hostapi})`;
+    const selected = (d.index === _prefSonDeviceIndex) ? ' selected' : '';
+    opts += `<option value="${d.index}"${selected}>${label}</option>`;
+  }
+  sel.innerHTML = opts;
+  if (status) status.textContent = list.length + ' périphérique(s) disponible(s)';
+}
+
+function prefSonSetDevice(val) {
+  _prefSonDeviceIndex = val ? parseInt(val) : null;
+  window.api.sendAudio({ cmd: 'set_device', device: _prefSonDeviceIndex });
+  const status = document.getElementById('prefSonStatus');
+  if (status) status.textContent = 'Changement en cours…';
+}
