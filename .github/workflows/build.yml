@@ -67,11 +67,12 @@ jobs:
         if: matrix.os != 'ubuntu-latest'
         shell: bash
         run: |
-          pip install pyinstaller sounddevice soundfile numpy scipy
+          pip install pyinstaller sounddevice soundfile numpy scipy dawdreamer
           pyinstaller --onefile --clean --noconfirm \
             --exclude-module jack \
             --collect-submodules scipy.signal \
             --hidden-import sounddevice \
+            --collect-all dawdreamer \
             --distpath python \
             python/audio_server.py
 

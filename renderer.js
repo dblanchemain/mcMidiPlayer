@@ -312,6 +312,7 @@ function loadBankIntoSlot(interpIdx, bankIdx, slot) {
       fadeIn:   k.fadeIn   ?? 0.05,
       fadeOut:  k.fadeOut  ?? 0.1,
       oneShot:  k.oneShot  ?? false,
+      fx:       k.fx       ?? [],
     });
     if (vol !== 1) window.api.sendAudio({ cmd: 'set_gain', id, gain: vol });
     ids.add(id);

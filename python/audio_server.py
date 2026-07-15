@@ -15,6 +15,8 @@ import math
 import platform
 import queue
 import argparse
+import contextlib
+import concurrent.futures
 import numpy as np
 
 _parser = argparse.ArgumentParser(add_help=False)
@@ -56,6 +58,139 @@ if USE_JACK:
         import jack
     except ImportError:
         USE_JACK = False
+
+# ── Greffons FX Faust (traitement au Note On, via dawdreamer) ─────────────────
+
+# En exécutable PyInstaller gelé, __file__ pointe vers le dossier d'extraction
+# temporaire (sys._MEIPASS) et non l'emplacement réel de l'exécutable ; le
+# catalogue faust_fx/ est copié par electron-forge à côté de l'exécutable
+# (extraResource: 'python'), donc on résout depuis sys.executable dans ce cas.
+_FX_BASE_DIR = os.path.dirname(sys.executable) if getattr(sys, 'frozen', False) \
+    else os.path.dirname(os.path.abspath(__file__))
+FX_DIR = os.path.join(_FX_BASE_DIR, 'faust_fx')
+FX_VELOCITY_BUCKETS = (16, 32, 48, 64, 80, 96, 112, 127)
+
+FAUST_FX_ERROR = None
+
+# dawdreamer/libfaust (JIT LLVM) doit toujours être utilisé depuis le MÊME
+# thread OS — pas seulement "pas en même temps" : un simple Lock ne suffit
+# pas, un deuxième thread qui l'utilise après coup (même sans chevauchement
+# avec le premier) reste bloqué indéfiniment. Chaque touche lance pourtant
+# son propre thread de rendu FX (_start_fx_render) ; on route donc tout
+# appel natif vers un unique thread pool à un seul worker, réutilisé pour
+# toute la durée de vie du process.
+_faust_pool = concurrent.futures.ThreadPoolExecutor(max_workers=1, thread_name_prefix='faust')
+
+try:
+    import dawdreamer as _daw
+    HAVE_FAUST_FX = True
+except ImportError as e:
+    _daw = None
+    HAVE_FAUST_FX = False
+    FAUST_FX_ERROR = f'{e} (python={sys.executable})'
+
+
+@contextlib.contextmanager
+def _suppress_native_stderr():
+    """dawdreamer/libfaust écrivent parfois des avertissements bénins
+    (ex: nombre de canaux) directement sur le fd stderr natif ; on les
+    masque pour ne pas les faire remonter comme erreurs côté renderer."""
+    try:
+        stderr_fd = sys.stderr.fileno()
+        saved_fd  = os.dup(stderr_fd)
+        devnull   = os.open(os.devnull, os.O_WRONLY)
+    except Exception:
+        yield
+        return
+    try:
+        os.dup2(devnull, stderr_fd)
+        yield
+    finally:
+        os.dup2(saved_fd, stderr_fd)
+        os.close(devnull)
+        os.close(saved_fd)
+
+
+def _process_channel_through_fx(mono, sr, fx_chain, velocity):
+    """Fait passer un signal mono (un canal du fichier N-canaux) à travers
+    la chaîne de greffons Faust définie côté mcMidiKeyboard, avec les
+    paramètres proportionnels à la vélocité. Limitation v1 : le rendu
+    conserve la longueur d'origine (pas d'extension de queue de reverb/delay
+    au-delà de la fin du fichier), pour rester compatible avec l'enveloppe de
+    fade calculée sur cette longueur."""
+    n = len(mono)
+    if n == 0 or not fx_chain or not HAVE_FAUST_FX:
+        return mono
+    return _faust_pool.submit(
+        _process_channel_through_fx_on_faust_thread, mono, sr, fx_chain, velocity, n
+    ).result()
+
+
+def _process_channel_through_fx_on_faust_thread(mono, sr, fx_chain, velocity, n):
+    duration  = n / sr
+    vel_scale = max(0.0, min(1.0, velocity / 127.0))
+
+    with _suppress_native_stderr():
+        engine   = _daw.RenderEngine(sr, 512)
+        src_data = np.stack([mono, mono]).astype(np.float32)  # duplication mono→2ch
+        src      = engine.make_playback_processor('src', src_data)
+        graph      = [(src, [])]
+        prev       = 'src'
+        any_stage  = False
+
+        for i, stage in enumerate(fx_chain):
+            dsp_name = stage.get('dsp')
+            if not dsp_name:
+                continue
+            dsp_path = os.path.join(FX_DIR, dsp_name)
+            if not os.path.isfile(dsp_path):
+                continue
+            proc_name = f'fx{i}'
+            fp = engine.make_faust_processor(proc_name)
+            fp.set_dsp(dsp_path)
+            if not fp.compile():
+                continue
+            bounds = {p['name']: (p['min'], p['max']) for p in fp.get_parameters_description()}
+            for pname, pcfg in (stage.get('params') or {}).items():
+                if pname not in bounds:
+                    continue
+                pmin, pmax = bounds[pname]
+                # La vélocité interpole depuis pmin (vel=0, état "au repos" du
+                # paramètre) vers la valeur éditée (vel=127), plutôt que de
+                # multiplier la valeur absolue : sinon, pour un pmin > 0 (ex.
+                # fréquence de filtre 20-20000 Hz), vel_scale faible écrase la
+                # valeur sous pmin et le clamp la fige, rendant la vélocité
+                # sans effet perceptible sur ce paramètre.
+                base = max(pmin, min(pmax, pmin + (float(pcfg.get('value', 0.0)) - pmin) * vel_scale))
+                if pcfg.get('automate'):
+                    pts = pcfg.get('points') or []
+                    if len(pts) < 2:
+                        v0  = float(pcfg.get('value', 0.0))
+                        pts = [{'t': 0.0, 'v': v0}, {'t': 1.0, 'v': float(pcfg.get('valueEnd', v0))}]
+                    pts = sorted(pts, key=lambda p: p['t'])
+                    xs    = np.array([p['t'] for p in pts], dtype=np.float32)
+                    ys    = pmin + (np.array([p['v'] for p in pts], dtype=np.float32) - pmin) * vel_scale
+                    t     = np.linspace(0.0, 1.0, n, dtype=np.float32)
+                    curve = np.clip(np.interp(t, xs, ys), pmin, pmax)
+                    fp.set_automation(pname, curve.astype(np.float32))
+                else:
+                    fp.set_parameter(pname, base)
+            graph.append((fp, [prev]))
+            prev      = proc_name
+            any_stage = True
+
+        if not any_stage:
+            return mono
+        if not engine.load_graph(graph) or not engine.render(duration):
+            return mono
+        out = engine.get_audio()
+
+    if out.shape[1] < n:
+        pad = np.zeros(n - out.shape[1], dtype=np.float32)
+        return np.concatenate([out[0], pad])
+    return out[0, :n].astype(np.float32)
+
+# ── Communication JSON ────────────────────────────────────────────────────────
 
 def emit(obj):
     sys.stdout.write(json.dumps(obj) + '\n')
@@ -153,6 +288,10 @@ class Track:
         self.voices    = []
         self._env_cache     = None
         self._env_cache_key = None
+        self.fx_chain        = []    # [{dsp, params:{name:{value,automate,points:[{t,v}]}}}]
+        self.fx_cache        = {}    # {vélocité_palier: np.ndarray (frames, ch)}
+        self.fx_state        = 'idle'  # idle|rendering|ready|error
+        self._fx_chain_json  = '[]'
 
     def load(self):
         if not self.file or not os.path.exists(self.file):
@@ -169,8 +308,11 @@ class Track:
                 self.sr   = sr
                 self._env_cache     = None
                 self._env_cache_key = None
+                self.fx_cache       = {}
             event_queue.put({'type': 'loaded', 'id': self.id,
                              'channels': data.shape[1], 'frames': data.shape[0], 'sr': sr})
+            if self.fx_chain and HAVE_FAUST_FX:
+                self._start_fx_render()
             return True
         except Exception as e:
             event_queue.put({'type': 'load_error', 'id': self.id, 'message': str(e)})
@@ -207,12 +349,64 @@ class Track:
         db = (self.gain - 1) * 2.0
         return 10 ** (db / 20.0) * self.volume
 
+    # ── Greffons FX Faust ──────────────────────────────────────────────────
+
+    def set_fx_chain(self, fx_chain):
+        """Met à jour la chaîne FX ; relance le précalcul par palier de
+        vélocité si elle a effectivement changé."""
+        new_json = json.dumps(fx_chain or [], sort_keys=True)
+        if new_json == self._fx_chain_json:
+            return
+        self._fx_chain_json = new_json
+        self.fx_chain = fx_chain or []
+        with self.lock:
+            self.fx_cache = {}
+        if self.fx_chain and self.data is not None and HAVE_FAUST_FX:
+            self._start_fx_render()
+        else:
+            self.fx_state = 'idle'
+
+    def _start_fx_render(self):
+        self.fx_state = 'rendering'
+        event_queue.put({'type': 'fx_state', 'id': self.id, 'state': 'rendering'})
+        threading.Thread(target=self._render_fx_buckets, daemon=True).start()
+
+    def _render_fx_buckets(self):
+        with self.lock:
+            data  = self.data
+            sr    = self.sr
+            chain = list(self.fx_chain)
+        if data is None:
+            return
+        try:
+            n_frames, n_ch = data.shape
+            new_cache = {}
+            for vel in FX_VELOCITY_BUCKETS:
+                out = np.zeros((n_frames, n_ch), dtype=np.float32)
+                for ch in range(n_ch):
+                    out[:, ch] = _process_channel_through_fx(data[:, ch], sr, chain, vel)
+                new_cache[vel] = out
+            with self.lock:
+                if list(self.fx_chain) == chain:   # pas changé pendant le calcul
+                    self.fx_cache = new_cache
+                    self.fx_state = 'ready'
+            event_queue.put({'type': 'fx_ready', 'id': self.id})
+        except Exception as e:
+            self.fx_state = 'error'
+            event_queue.put({'type': 'fx_error', 'id': self.id, 'message': str(e)})
+
     def start(self, velocity=127):
         with self.lock:
             if self.data is None:
                 return
+            data = self.data
+            if self.fx_chain and self.fx_cache:
+                bucket  = min(FX_VELOCITY_BUCKETS, key=lambda b: abs(b - velocity))
+                fx_data = self.fx_cache.get(bucket)
+                if fx_data is not None:
+                    data = fx_data
             env   = self._get_envelope()
-            voice = Voice(self.data, env, self, velocity)
+            voice = Voice(data, env, self, velocity)
             self.voices.append(voice)
 
     def stop(self):
@@ -372,6 +566,7 @@ def process_commands():
             track.one_shot  = bool(msg.get('oneShot', False))
             with track.lock:
                 track._env_cache_key = None
+            track.set_fx_chain(msg.get('fx', []))
             new_file = msg.get('file', '')
             if new_file and new_file != old_file:
                 track.file = new_file
